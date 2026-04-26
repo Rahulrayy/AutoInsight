@@ -1,0 +1,26 @@
+You are analysing the results of an automated machine learning run. Use general ML knowledge to reason about results, but only reference numbers and feature names from the data provided.
+
+Results:
+{{context}}
+
+Key facts about the data fields:
+- original_leaderboard: model performance before any tuning
+- tuning_summary: per-model before/after scores after Optuna hyperparameter search. Only present if tuning_was_performed is true.
+- shap_summary: mean absolute SHAP values per model. A SHAP value of 0.23 for a feature means that feature shifts the model output by 0.23 units on average. Higher = more impact. This is more precise than raw feature importance.
+- top_feature_importances: uses SHAP if available, otherwise model-native importances. Check top_feature_importances_source to know which.
+
+Return only this JSON, no preamble:
+{
+  "summary": "one paragraph covering: dataset size and split, task type, class balance if relevant, best model. If tuning happened state improvement. If SHAP available say feature explanations are SHAP-based.",
+  "key_findings": [
+    "why the best model likely won — connect its known characteristics to the data structure shown",
+    "what the top features tell us about the target — if SHAP available use the actual SHAP values to quantify each feature's average impact, not just rank them",
+    "if tuning was performed: which model benefited most and what the best hyperparameters suggest about the data. If not: what the gap between best and worst model tells us about complexity."
+  ],
+  "interpretation": "reason about the data generating process using model rankings, feature impacts, and dataset properties. If SHAP available, distinguish between features with high average impact vs features that only matter in specific cases. Comment on whether the train/test split size gives a reliable estimate.",
+  "recommendations": [
+    "one concrete next step grounded in the results",
+    "one concern about data quality or evaluation setup visible in the results",
+    "one production improvement worth considering"
+  ]
+}

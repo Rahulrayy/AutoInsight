@@ -1,0 +1,17 @@
+.env
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.DS_Store
+*.egg-info
+dist
+build
+notebooks/.ipynb_checkpoints
+assets/demo.gif
+catboost_info/
+.idea/
+.claude/
+to do.txt

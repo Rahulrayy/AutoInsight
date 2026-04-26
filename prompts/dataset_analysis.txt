@@ -1,0 +1,13 @@
+Below is a structured summary of a dataset that has just been profiled. Analyse it and return a JSON object.
+
+Dataset profile:
+{{context}}
+
+Return a JSON object with exactly these keys:
+
+{
+  "summary": "one paragraph describing the dataset size, column types, and any data quality issues visible in the profile",
+  "data_quality_flags": ["list any missing value issues, near constant features, or high correlations worth noting"],
+  "class_balance_note": "comment on class balance if present, or state not applicable for regression",
+  "preprocessing_notes": ["list any preprocessing decisions the pipeline will likely need to make based on this profile"]
+}

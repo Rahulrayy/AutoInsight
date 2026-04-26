@@ -1,0 +1,24 @@
+pipeline:
+  random_seed: 42
+  test_size: 0.2
+  max_file_size_mb: 50
+
+preprocessing:
+  near_constant_threshold: 0.95
+  high_cardinality_threshold: 10
+  skew_threshold: 1.0
+  outlier_iqr_factor: 3.0
+  feature_selection_k: 30
+
+profiling:
+  high_correlation_threshold: 0.85
+  imbalance_threshold: 0.80
+
+tuning:
+  n_trials: 40
+
+llm:
+  max_retries: 3
+  max_tokens: 800
+  temperature: 0.2
+  max_context_chars: 10000

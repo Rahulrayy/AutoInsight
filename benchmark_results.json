@@ -1,0 +1,321 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import os
+from dotenv import load_dotenv
+
+from pipeline.ingestion import load_csv, get_basic_info
+from pipeline.profiling import profile_dataset
+from pipeline.preprocessing import run_preprocessing
+from pipeline.automl import train_all_models
+from pipeline.evaluation import run_evaluation
+from pipeline.llm_reasoning import explain_results, answer_question
+from utils.validators import run_all_validations
+from utils.formatters import (
+    leaderboard_to_display,
+    importances_to_display,
+    profile_to_display,
+    build_full_report,
+    report_to_json_string
+)
+from utils.logger import get_logger
+
+load_dotenv()
+logger = get_logger("app")
+
+st.set_page_config(
+    page_title="AutoInsight",
+    page_icon="assets/favicon.png" if os.path.exists("assets/favicon.png") else None,
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# minimal css, only things config.toml cant handle
+st.markdown("""
+<style>
+    #MainMenu, footer { visibility: hidden; }
+    .block-container { padding-top: 2rem; padding-bottom: 2rem; max-width: 1100px; }
+    h1 { font-size: 1.8rem; font-weight: 700; }
+    h2 { font-size: 1.1rem; font-weight: 600; color: #374151; }
+    [data-testid="metric-container"] {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+def get_api_key():
+    return os.getenv("GROQ_API_KEY", "")
+
+
+def render_upload_tab():
+    st.subheader("Upload your dataset")
+    uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
+
+    if uploaded_file is None:
+        st.info("Upload a CSV file to get started.")
+        return None, None
+
+    try:
+        df = load_csv(uploaded_file)
+    except ValueError as e:
+        st.error(str(e))
+        return None, None
+
+    info = get_basic_info(df)
+    st.success(f"Loaded {info['rows']:,} rows and {info['columns']} columns ({info['memory_mb']} MB)")
+
+    with st.expander("Data preview", expanded=True):
+        st.dataframe(df.head(20), use_container_width=True)
+
+    st.subheader("Select target column")
+    st.caption("This is the column you want the model to predict.")
+    target_col = st.selectbox("Target column", options=df.columns)
+
+    return df, target_col
+
+
+def render_profile_section(df, target_col):
+    with st.spinner("Profiling dataset..."):
+        profile = profile_dataset(df, target_col)
+
+    display = profile_to_display(profile)
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Rows", f"{display['rows']:,}")
+    col2.metric("Columns", display["columns"])
+    col3.metric("Columns with missing values", display["missing_value_count"])
+    col4.metric("Near-constant features", display["near_constant_count"])
+
+    if display["imbalance_warning"]:
+        st.warning("Class imbalance detected. The dominant class exceeds 80% of target values.")
+
+    if display["high_correlation_pairs"]:
+        st.warning(f"Highly correlated feature pairs: {display['high_correlation_pairs']}")
+
+    if profile.get("missing_values"):
+        with st.expander("Missing value breakdown"):
+            missing_df = pd.DataFrame(
+                list(profile["missing_values"].items()),
+                columns=["Column", "Missing Ratio"]
+            )
+            st.dataframe(missing_df, use_container_width=True)
+
+    return profile
+
+
+def render_leaderboard(leaderboard, task_type):
+    display_rows = leaderboard_to_display(leaderboard, task_type)
+    best = display_rows[0]["model"]
+
+    st.subheader("Model Leaderboard")
+    st.dataframe(
+        pd.DataFrame(display_rows).set_index("rank"),
+        use_container_width=True
+    )
+    st.success(f"Best model: **{best}**")
+
+
+def render_feature_importances(importances):
+    if not importances:
+        st.info("Feature importances not available for this model.")
+        return
+
+    data = importances_to_display(importances, top_n=15)
+
+    fig = px.bar(
+        x=data["scores"],
+        y=data["features"],
+        orientation="h",
+        labels={"x": "Importance Score", "y": ""},
+        color=data["scores"],
+        color_continuous_scale=[[0, "#93c5fd"], [1, "#2563eb"]]
+    )
+    fig.update_layout(
+        plot_bgcolor="#ffffff",
+        paper_bgcolor="#ffffff",
+        font=dict(size=13, color="#374151"),
+        yaxis=dict(autorange="reversed"),
+        coloraxis_showscale=False,
+        margin=dict(l=10, r=20, t=20, b=20),
+        height=420
+    )
+    fig.update_traces(marker_line_width=0)
+
+    st.subheader("Feature Importances")
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def render_llm_explanation(explanation):
+    if not explanation or explanation.get("summary") == "llm explanation unavailable":
+        st.warning("LLM explanation unavailable. Check that GROQ_API_KEY is set in your .env file.")
+        return
+
+    st.subheader("Summary")
+    st.write(explanation.get("summary", ""))
+
+    findings = explanation.get("key_findings", [])
+    if findings:
+        st.subheader("Key Findings")
+        for f in findings:
+            st.info(f)
+
+    interp = explanation.get("interpretation", "")
+    if interp:
+        st.subheader("Interpretation")
+        st.write(interp)
+
+    recs = explanation.get("recommendations", [])
+    if recs:
+        st.subheader("Recommendations")
+        for r in recs:
+            st.success(r)
+
+
+def render_qa_section(profile, eval_results, api_key):
+    st.divider()
+    st.subheader("Ask a question about your results")
+    st.caption("The model only uses the computed results above, not any raw data.")
+
+    question = st.text_input(
+        "Your question",
+        placeholder="e.g. why did random forest outperform logistic regression?"
+    )
+
+    if st.button("Ask") and question.strip():
+        with st.spinner("Thinking..."):
+            try:
+                answer = answer_question(question, profile, eval_results, api_key)
+
+                st.subheader("Answer")
+                st.write(answer.get("answer", ""))
+
+                evidence = answer.get("supporting_evidence", [])
+                if evidence:
+                    with st.expander("Supporting evidence"):
+                        for e in evidence:
+                            st.write(f"- {e}")
+
+                caveat = answer.get("caveat")
+                if caveat:
+                    st.caption(f"Note: {caveat}")
+
+            except Exception as e:
+                st.error(f"Could not get answer: {e}")
+
+
+def main():
+    api_key = get_api_key()
+
+    st.title("AutoInsight")
+    st.caption("Automated tabular ML analysis with constrained LLM explanations.")
+    st.divider()
+
+    tab1, tab2, tab3, tab4 = st.tabs(["Upload & Profile", "Run AutoML", "Explanation", "Download"])
+
+    with tab1:
+        df, target_col = render_upload_tab()
+
+        if df is not None and target_col:
+            try:
+                run_all_validations(df, target_col)
+                st.divider()
+                st.subheader("Dataset Profile")
+                profile = render_profile_section(df, target_col)
+                st.session_state["df"] = df
+                st.session_state["target_col"] = target_col
+                st.session_state["profile"] = profile
+            except ValueError as e:
+                st.error(str(e))
+
+    with tab2:
+        if "profile" not in st.session_state:
+            st.info("Complete the upload step first.")
+        else:
+            df = st.session_state["df"]
+            target_col = st.session_state["target_col"]
+            profile = st.session_state["profile"]
+
+            if st.button("Run AutoML", type="primary"):
+                try:
+                    with st.spinner("Preprocessing data..."):
+                        X_train, X_test, y_train, y_test, artifacts = run_preprocessing(df, target_col, profile)
+
+                    with st.spinner("Training models..."):
+                        trained_models = train_all_models(
+                            X_train, y_train,
+                            artifacts["task_type"],
+                            artifacts["feature_names"]
+                        )
+
+                    with st.spinner("Evaluating models..."):
+                        eval_results = run_evaluation(trained_models, X_test, y_test, artifacts["task_type"])
+
+                    st.session_state["eval_results"] = eval_results
+                    st.session_state["artifacts"] = artifacts
+
+                    render_leaderboard(eval_results["leaderboard"], artifacts["task_type"])
+                    render_feature_importances(eval_results["best_feature_importances"])
+
+                    if api_key:
+                        with st.spinner("Generating LLM explanation..."):
+                            try:
+                                explanation = explain_results(profile, eval_results, api_key)
+                                st.session_state["explanation"] = explanation
+                                st.success("LLM explanation generated. See the Explanation tab.")
+                            except Exception as e:
+                                logger.warning(f"llm failed: {e}")
+                                st.session_state["explanation"] = None
+                                st.warning("LLM explanation failed. Raw results are still available.")
+                    else:
+                        st.warning("No GROQ_API_KEY found in .env. Skipping LLM explanation.")
+
+                except Exception as e:
+                    logger.error(f"pipeline failed: {e}")
+                    st.error(f"Pipeline error: {e}")
+
+            elif "eval_results" in st.session_state:
+                eval_results = st.session_state["eval_results"]
+                artifacts = st.session_state["artifacts"]
+                render_leaderboard(eval_results["leaderboard"], artifacts["task_type"])
+                render_feature_importances(eval_results["best_feature_importances"])
+
+    with tab3:
+        if "eval_results" not in st.session_state:
+            st.info("Run AutoML first.")
+        else:
+            render_llm_explanation(st.session_state.get("explanation"))
+            if "profile" in st.session_state and api_key:
+                render_qa_section(
+                    st.session_state["profile"],
+                    st.session_state["eval_results"],
+                    api_key
+                )
+
+    with tab4:
+        if "eval_results" not in st.session_state:
+            st.info("Run AutoML first.")
+        else:
+            report = build_full_report(
+                st.session_state["profile"],
+                st.session_state["eval_results"],
+                st.session_state.get("explanation")
+            )
+            json_str = report_to_json_string(report)
+
+            st.subheader("Download Report")
+            st.download_button(
+                label="Download full report as JSON",
+                data=json_str,
+                file_name="autoinsight_report.json",
+                mime="application/json"
+            )
+            st.divider()
+            st.subheader("Report Preview")
+            st.json(report)
+
+
+if __name__ == "__main__":
+    main()
