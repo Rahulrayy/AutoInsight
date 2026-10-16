@@ -5,7 +5,7 @@
 The project was built as a personal exploration of what a lightweight, transparent, and privacy-aware AutoML tool could look like for tabular data.
 
 
-NOTE: Some plots do not render on live deployment due to resource constraints, please run locally to gaurentee everything is running as it should
+NOTE: Some plots do not render on live deployment due to resource constraints, please run locally to guarantee everything is running as it should
 ---
 
 ## What It Does
